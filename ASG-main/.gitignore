@@ -1,0 +1,110 @@
+# =========================================================
+# Common OS junk
+# =========================================================
+.DS_Store
+Thumbs.db
+
+# =========================================================
+# Secrets / Env
+# =========================================================
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# =========================================================
+# Python (Flask server / AI)
+# =========================================================
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.log
+.mypy_cache/
+.pytest_cache/
+
+# Virtual envs
+venv/
+.venv/
+env/
+aivenv/
+AI_hyoji/aivenv/
+
+# Databases (keep migrations, ignore actual DB files)
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+server/instance/**/*.db
+instance/**/*.db
+
+# Model / Checkpoints / Large binaries
+*.pth
+*.pt
+*.onnx
+*.ckpt
+*.tflite
+
+# Upload / Generated media (do NOT version runtime outputs)
+uploaded_videos/
+server/uploaded_videos/
+event_clips/
+AI_hyoji/analyzed_videos/
+media/
+static/uploads/
+server/static/uploads/
+performance_pdfs/
+# ↑ 필요하면 폴더명 맞춰 조정
+
+# Videos & large media (project-wide)
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.wav
+*.zip
+*.7z
+*.tar
+*.gz
+
+# =========================================================
+# Node / Next.js (client)
+# =========================================================
+node_modules/
+.npm/
+.pnp/
+.pnp.cjs
+.pnp.js
+.npmrc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js build outputs
+.next/
+out/
+dist/
+.turbo/
+.vercel/
+.cache/
+
+# Coverage / test outputs
+coverage/
+.cypress/
+playwright-report/
+test-results/
+
+# Production builds
+build/
+
+# Tooling / Editors (optional to ignore)
+.vscode/
+.idea/
+
+venv/
+ai_venv/

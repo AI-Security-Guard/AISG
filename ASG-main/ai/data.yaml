@@ -1,0 +1,5 @@
+path: D:/humandataset_yolo_person
+train: images/train
+val: images/validation
+nc: 1
+names: ['person']
