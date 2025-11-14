@@ -33,7 +33,7 @@ function ListPage() {
         }
         const data = await res.json();
         const mapped = (data.clips || []).map((c, i) => ({
-            id: c.clip_id ?? i,
+            id: c.id,
             date: c.start_time ?? "",
             message: c.class_name === "assault" ? "폭행" : c.class_name ?? "",
             checked: Boolean(c.checked),

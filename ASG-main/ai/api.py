@@ -7,10 +7,11 @@ from flask import Flask, request, jsonify, send_from_directory, abort, url_for
 from pytorchvideo.models.hub import slowfast_r50
 from ultralytics import YOLO
 from os.path import basename
-from flask_cors import CORS   # 🔥 추가
+from flask_cors import CORS  # 🔥 추가
 
 # 🔗 DB / Models (User 안 씀)
 import sys, os
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from server.models import db, Job, Clip
@@ -19,11 +20,12 @@ from server.models import db, Job, Clip
 # ================== Flask & DB 초기화 ==================
 app = Flask(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "server", "instance", "users.db")
+DB_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "server", "instance", "users.db"
+)
 DB_PATH = os.path.abspath(DB_PATH)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
-
 
 
 CORS(
@@ -56,13 +58,15 @@ ROI_MIN_AREA_RATIO = 0.02
 BG_MODE = "gray"  # or "blur"
 
 # --- SlowFast sampling & norm ---
-warnings.filterwarnings("ignore", category=FutureWarning, message="You are using torch.load")
+warnings.filterwarnings(
+    "ignore", category=FutureWarning, message="You are using torch.load"
+)
 MEAN = torch.tensor([0.45, 0.45, 0.45]).view(1, 3, 1, 1, 1)
-STD  = torch.tensor([0.225, 0.225, 0.225]).view(1, 3, 1, 1, 1)
+STD = torch.tensor([0.225, 0.225, 0.225]).view(1, 3, 1, 1, 1)
 
 # --- Temporal Stabilization ---
-LOGIT_EMA    = 0.70
-MARGIN_MIN   = 0.08
+LOGIT_EMA = 0.70
+MARGIN_MIN = 0.08
 SWITCH_DELTA = 0.10
 SWITCH_CONSEC = 4
 MIN_HOLD = {
@@ -73,28 +77,29 @@ MIN_HOLD = {
 MIN_SHOW_CONF = 0.30
 
 # --- Fallbacks ---
-T_FAST_FALLBACK  = 32
-ALPHA_FALLBACK   = 4
-SIZE_FALLBACK    = 224
+T_FAST_FALLBACK = 32
+ALPHA_FALLBACK = 4
+SIZE_FALLBACK = 224
 
 # ================== API용 경로 (OUT_DIR를 루트로 사용) ==================
-BASE_OUT        = os.path.abspath("./")
+BASE_OUT = os.path.abspath("./")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 파일 맨 위쪽 설정부
-#EVENT_CLIPS_DIR = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\event_clips"
-#THUMBS_DIR      = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\thumbnails"
+# EVENT_CLIPS_DIR = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\event_clips"
+# THUMBS_DIR      = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\thumbnails"
 
 EVENT_CLIPS_DIR = os.path.join(BASE_OUT, "event_clips")
-THUMBS_DIR      = os.path.join(BASE_OUT, "thumbnails")
-UPLOAD_DIR      = os.path.join(BASE_OUT, "uploads")
-ANALYZED_DIR    = os.path.join(BASE_OUT, "analyzed_videos")
-CSV_DIR         = os.path.join(BASE_OUT, "csv_logs")
+THUMBS_DIR = os.path.join(BASE_OUT, "thumbnails")
+UPLOAD_DIR = os.path.join(BASE_OUT, "uploads")
+ANALYZED_DIR = os.path.join(BASE_OUT, "analyzed_videos")
+CSV_DIR = os.path.join(BASE_OUT, "csv_logs")
 
 for d in [BASE_OUT, UPLOAD_DIR, ANALYZED_DIR, EVENT_CLIPS_DIR, THUMBS_DIR, CSV_DIR]:
     os.makedirs(d, exist_ok=True)
 
 URL_BASE = "http://127.0.0.1:5001"
+
 
 # ================== 유틸 함수 ==================
 def center_crop_rgb(bgr, size):
@@ -104,7 +109,7 @@ def center_crop_rgb(bgr, size):
     nh, nw = int(round(h * scale)), int(round(w * scale))
     img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
     y0, x0 = max(0, (nh - size) // 2), max(0, (nw - size) // 2)
-    img = img[y0:y0+size, x0:x0+size]
+    img = img[y0 : y0 + size, x0 : x0 + size]
     return img
 
 
@@ -112,8 +117,8 @@ def expand_box(box, scale, W, H):
     x1, y1, x2, y2 = box
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     bw, bh = (x2 - x1) * scale, (y2 - y1) * scale
-    nx1, ny1 = max(0, int(cx - bw/2)), max(0, int(cy - bh/2))
-    nx2, ny2 = min(W, int(cx + bw/2)), min(H, int(cy + bh/2))
+    nx1, ny1 = max(0, int(cx - bw / 2)), max(0, int(cy - bh / 2))
+    nx2, ny2 = min(W, int(cx + bw / 2)), min(H, int(cy + bh / 2))
     return nx1, ny1, nx2, ny2
 
 
@@ -122,10 +127,10 @@ def make_roi_frame(frame, dets, scale=1.45, roi_min_ratio=0.02, bg_mode="gray"):
     if not dets:
         return None
     mask = np.zeros((H, W), np.uint8)
-    for (x1, y1, x2, y2, *_ ) in dets:
+    for (x1, y1, x2, y2, *_) in dets:
         ex1, ey1, ex2, ey2 = expand_box((x1, y1, x2, y2), scale, W, H)
         mask[ey1:ey2, ex1:ex2] = 255
-    if mask.mean()/255.0 < roi_min_ratio:
+    if mask.mean() / 255.0 < roi_min_ratio:
         return None
     if bg_mode == "blur":
         bg = cv2.GaussianBlur(frame, (0, 0), sigmaX=9, sigmaY=9)
@@ -146,7 +151,7 @@ def yolo_person_boxes(yolo, frame, conf, min_area_ratio, aspect_min, aspect_max)
     for b, c, s in zip(
         r.boxes.xyxy.cpu().numpy(),
         r.boxes.cls.cpu().numpy(),
-        r.boxes.conf.cpu().numpy()
+        r.boxes.conf.cpu().numpy(),
     ):
         if (person_ids and int(c) not in person_ids) and int(c) != 0:
             continue
@@ -161,6 +166,7 @@ def yolo_person_boxes(yolo, frame, conf, min_area_ratio, aspect_min, aspect_max)
         out.append((x1, y1, x2, y2, float(s), int(c)))
     return out
 
+
 import os
 import cv2
 import shutil
@@ -168,26 +174,37 @@ import subprocess
 
 FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"
 
+
 def extract_clip(video_path, start_s, end_s, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     start_s = max(0.0, float(start_s))
-    end_s   = max(start_s, float(end_s))
-    dur     = max(0.10, end_s - start_s)
+    end_s = max(start_s, float(end_s))
+    dur = max(0.10, end_s - start_s)
 
     # 1) ffmpeg로 먼저 시도 (절대경로 사용)
     if os.path.isfile(FFMPEG_PATH):
         cmd = [
-            FFMPEG_PATH, "-y",
-            "-i", video_path,                 # 먼저 입력
-            "-ss", f"{start_s:.3f}",          # 그 다음 시작 시간
-            "-t",  f"{dur:.3f}",
-            "-c:v", "libx264",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
-            "-loglevel", "error",
+            FFMPEG_PATH,
+            "-y",
+            "-i",
+            video_path,  # 먼저 입력
+            "-ss",
+            f"{start_s:.3f}",  # 그 다음 시작 시간
+            "-t",
+            f"{dur:.3f}",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            "-loglevel",
+            "error",
             out_path,
         ]
         try:
@@ -204,8 +221,8 @@ def extract_clip(video_path, start_s, end_s, out_path):
         return False
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    W   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     vw = cv2.VideoWriter(out_path, fourcc, fps, (W, H))
     if not vw.isOpened():
@@ -213,7 +230,7 @@ def extract_clip(video_path, start_s, end_s, out_path):
         return False
 
     start_f = int(round(start_s * fps))
-    end_f   = int(round(end_s   * fps))
+    end_f = int(round(end_s * fps))
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
 
     fidx = start_f
@@ -231,6 +248,40 @@ def extract_clip(video_path, start_s, end_s, out_path):
     return ok and os.path.isfile(out_path)
 
 
+def reencode_to_h264(in_path: str):
+    """
+    OpenCV로 만든 mp4를 ffmpeg로 H.264(yuv420p)로 재인코딩해서
+    브라우저에서 더 안정적으로 재생되도록 만든다.
+    """
+    if not (os.path.isfile(FFMPEG_PATH) and os.path.isfile(in_path)):
+        return
+
+    tmp_out = in_path + ".h264.mp4"
+
+    cmd = [
+        FFMPEG_PATH,
+        "-y",
+        "-i",
+        in_path,
+        "-c:v",
+        "libx264",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        "-loglevel",
+        "error",
+        tmp_out,
+    ]
+    rc = subprocess.run(cmd).returncode
+    if rc == 0 and os.path.isfile(tmp_out):
+        # 원본 파일을 H.264 버전으로 교체
+        os.replace(tmp_out, in_path)
+
 
 def save_thumbnail(video_path, t_sec, out_dir, name_stub):
     os.makedirs(out_dir, exist_ok=True)
@@ -245,7 +296,9 @@ def save_thumbnail(video_path, t_sec, out_dir, name_stub):
     h, w = fr.shape[:2]
     scale = min(640 / max(1, w), 360 / max(1, h))
     if scale < 1.0:
-        fr = cv2.resize(fr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        fr = cv2.resize(
+            fr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
+        )
     name = f"{name_stub}_thumb.jpg"
     out_path = os.path.join(out_dir, name)
     cv2.imwrite(out_path, fr)
@@ -287,13 +340,12 @@ def ensure_models_loaded():
     if _SF is None:
         ckpt = torch.load(CKPT, map_location="cpu", weights_only=False)
         _CLASSES = ckpt.get("classes", ["assault", "swoon", "trespass", "vandalism"])
-        _T_FAST  = int(ckpt.get("t_fast", T_FAST_FALLBACK))
-        _ALPHA   = int(ckpt.get("alpha", ALPHA_FALLBACK))
-        _SIZE    = int(ckpt.get("size", SIZE_FALLBACK))
+        _T_FAST = int(ckpt.get("t_fast", T_FAST_FALLBACK))
+        _ALPHA = int(ckpt.get("alpha", ALPHA_FALLBACK))
+        _SIZE = int(ckpt.get("size", SIZE_FALLBACK))
         model = slowfast_r50(pretrained=False)
         model.blocks[-1].proj = torch.nn.Linear(
-            model.blocks[-1].proj.in_features,
-            len(_CLASSES)
+            model.blocks[-1].proj.in_features, len(_CLASSES)
         )
         model.load_state_dict(ckpt["state_dict"])
         model.eval().to(_DEVICE)
@@ -320,10 +372,10 @@ def analyze_core(video_path, job_id: str):
                 db.session.commit()
         return
 
-    fps          = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    W            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     print("========== DEBUG VIDEO INFO ==========")
     print(f"video_path: {video_path}")
@@ -332,11 +384,11 @@ def analyze_core(video_path, job_id: str):
     print(f"W,H:          {W}, {H}")
     print("======================================")
 
-    stem    = os.path.splitext(os.path.basename(video_path))[0]
+    stem = os.path.splitext(os.path.basename(video_path))[0]
     out_mp4 = os.path.join(ANALYZED_DIR, f"{stem}_analyze.mp4")
     out_csv = os.path.join(CSV_DIR, f"{stem}_stable.csv")
-    fourcc  = cv2.VideoWriter_fourcc(*"mp4v")
-    writer  = cv2.VideoWriter(out_mp4, fourcc, fps, (W, H)) if SAVE_VIDEO else None
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(out_mp4, fourcc, fps, (W, H)) if SAVE_VIDEO else None
 
     buf = deque(maxlen=_T_FAST)
     rows = []
@@ -359,7 +411,9 @@ def analyze_core(video_path, job_id: str):
 
             # 진행률 갱신 (10프레임마다)
             if total_frames > 0 and frame_idx % 10 == 0:
-                print(f"[DEBUG] progress trigger: frame_idx={frame_idx}, total_frames={total_frames}")
+                print(
+                    f"[DEBUG] progress trigger: frame_idx={frame_idx}, total_frames={total_frames}"
+                )
                 with app.app_context():
                     job_row = Job.query.get(job_id)
                     if job_row:
@@ -368,8 +422,16 @@ def analyze_core(video_path, job_id: str):
                         job_row.message = "processing"
                         db.session.commit()
 
-            dets = yolo_person_boxes(_YOLO, frame, PERSON_CONF, MIN_AREA_RATIO, ASPECT_MIN, ASPECT_MAX)
-            roi  = make_roi_frame(frame, dets, scale=ROI_SCALE, roi_min_ratio=ROI_MIN_AREA_RATIO, bg_mode=BG_MODE)
+            dets = yolo_person_boxes(
+                _YOLO, frame, PERSON_CONF, MIN_AREA_RATIO, ASPECT_MIN, ASPECT_MAX
+            )
+            roi = make_roi_frame(
+                frame,
+                dets,
+                scale=ROI_SCALE,
+                roi_min_ratio=ROI_MIN_AREA_RATIO,
+                bg_mode=BG_MODE,
+            )
 
             # === ROI 없을 때: normal로 표시 ===
             if roi is None:
@@ -382,11 +444,19 @@ def analyze_core(video_path, job_id: str):
                     switch_count = 0
 
                 vis = frame.copy()
-                cv2.putText(vis, "normal", (12, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2)
-                for (x1, y1, x2, y2, *_ ) in dets:
-                    cv2.rectangle(vis, (int(x1), int(y1)),
-                                  (int(x2), int(y2)), (0, 255, 0), 2)
+                cv2.putText(
+                    vis,
+                    "normal",
+                    (12, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 200, 255),
+                    2,
+                )
+                for (x1, y1, x2, y2, *_) in dets:
+                    cv2.rectangle(
+                        vis, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2
+                    )
                 if SAVE_VIDEO and writer is not None:
                     writer.write(vis)
                 if SAVE_CSV:
@@ -398,12 +468,16 @@ def analyze_core(video_path, job_id: str):
             rgb = center_crop_rgb(roi, _SIZE)
             buf.append(rgb)
             pred_label = ""
-            pred_conf  = ""
+            pred_conf = ""
 
             if len(buf) == _T_FAST:
-                fast = torch.from_numpy(
-                    np.stack(list(buf), 0)
-                ).permute(3, 0, 1, 2).unsqueeze(0).float() / 255.0
+                fast = (
+                    torch.from_numpy(np.stack(list(buf), 0))
+                    .permute(3, 0, 1, 2)
+                    .unsqueeze(0)
+                    .float()
+                    / 255.0
+                )
                 slow = fast[:, :, ::_ALPHA, :, :]
                 fast = (fast - MEAN) / STD
                 slow = (slow - MEAN) / STD
@@ -445,9 +519,9 @@ def analyze_core(video_path, job_id: str):
                         switch_count = 0
                     else:
                         curr_idx = _CLASSES.index(current_label)
-                        cond_delta  = (top1 - float(p_ema[curr_idx])) >= SWITCH_DELTA
+                        cond_delta = (top1 - float(p_ema[curr_idx])) >= SWITCH_DELTA
                         cond_margin = (top1 - top2) >= MARGIN_MIN
-                        cond_hold   = hold_count >= MIN_HOLD.get(current_label, 16)
+                        cond_hold = hold_count >= MIN_HOLD.get(current_label, 16)
                         if cond_delta and cond_margin and cond_hold:
                             switch_count += 1
                             if switch_count >= SWITCH_CONSEC:
@@ -459,7 +533,7 @@ def analyze_core(video_path, job_id: str):
 
                 if current_label and top1 >= MIN_SHOW_CONF:
                     pred_label = current_label
-                    pred_conf  = f"{top1:.2f}"
+                    pred_conf = f"{top1:.2f}"
 
             # interval on/off
             first_bbox = None
@@ -478,12 +552,14 @@ def analyze_core(video_path, job_id: str):
                     if active["label"] != pred_label:
                         s = active["start_f"] / fps
                         e = frame_idx / fps
-                        intervals.append({
-                            "start": s,
-                            "end": e,
-                            "label": active["label"],
-                            "bbox": active["start_bbox"],
-                        })
+                        intervals.append(
+                            {
+                                "start": s,
+                                "end": e,
+                                "label": active["label"],
+                                "bbox": active["start_bbox"],
+                            }
+                        )
                         active = {
                             "label": pred_label,
                             "start_f": max(0, frame_idx - _T_FAST + 1),
@@ -493,12 +569,14 @@ def analyze_core(video_path, job_id: str):
                 if active is not None:
                     s = active["start_f"] / fps
                     e = frame_idx / fps
-                    intervals.append({
-                        "start": s,
-                        "end": e,
-                        "label": active["label"],
-                        "bbox": active["start_bbox"],
-                    })
+                    intervals.append(
+                        {
+                            "start": s,
+                            "end": e,
+                            "label": active["label"],
+                            "bbox": active["start_bbox"],
+                        }
+                    )
                     active = None
 
             # 오버레이/저장
@@ -506,29 +584,36 @@ def analyze_core(video_path, job_id: str):
             # pred_label 없으면 화면에는 normal로
             title = f"{pred_label} {pred_conf}" if pred_label else "normal"
 
-            for (x1, y1, x2, y2, *_ ) in dets:
-                cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-            cv2.putText(vis, title, (12, 28),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2)
+            for (x1, y1, x2, y2, *_) in dets:
+                cv2.rectangle(
+                    vis, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2
+                )
+            cv2.putText(
+                vis, title, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2
+            )
             if SAVE_VIDEO and writer is not None:
                 writer.write(vis)
             if SAVE_CSV:
-                rows.append({
-                    "frame": frame_idx,
-                    "pred": pred_label if pred_label else "normal",
-                    "conf": pred_conf
-                })
+                rows.append(
+                    {
+                        "frame": frame_idx,
+                        "pred": pred_label if pred_label else "normal",
+                        "conf": pred_conf,
+                    }
+                )
 
         # 루프 종료 후 active 마무리
         if active is not None:
             s = active["start_f"] / fps
             e = frame_idx / fps
-            intervals.append({
-                "start": s,
-                "end": e,
-                "label": active["label"],
-                "bbox": active["start_bbox"],
-            })
+            intervals.append(
+                {
+                    "start": s,
+                    "end": e,
+                    "label": active["label"],
+                    "bbox": active["start_bbox"],
+                }
+            )
 
     except Exception as e:
         with app.app_context():
@@ -543,6 +628,9 @@ def analyze_core(video_path, job_id: str):
         if writer is not None:
             writer.release()
 
+    if SAVE_VIDEO and os.path.isfile(out_mp4):
+        reencode_to_h264(out_mp4)
+
     # CSV 저장
     if SAVE_CSV and rows:
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
@@ -553,26 +641,32 @@ def analyze_core(video_path, job_id: str):
     # 클립 / 썸네일 생성
     clips_meta = []
     for i, it in enumerate(intervals, 1):
+        # 🔹 원래처럼 원본 파일명 기준으로 clip 이름 생성
         base = os.path.splitext(os.path.basename(video_path))[0]
         clip_name = f"{base}_clip{i}.mp4"
         clip_path = os.path.join(EVENT_CLIPS_DIR, clip_name)
-        ok = extract_clip(video_path, it["start"], it["end"], clip_path)
 
+        # 🔥 분석된 영상(out_mp4)에서 자르기
+        ok = extract_clip(out_mp4, it["start"], it["end"], clip_path)
+
+        # 🔹 썸네일도 분석된 영상 기준
         mid_t = (it["start"] + it["end"]) / 2.0
         thumb_stub = f"{base}_clip{i}"
-        thumb_path = save_thumbnail(video_path, mid_t, THUMBS_DIR, thumb_stub)
+        thumb_path = save_thumbnail(out_mp4, mid_t, THUMBS_DIR, thumb_stub)
 
         bbox = it.get("bbox")
-        clips_meta.append({
-            "ok": ok,
-            "label": it["label"],
-            "start_sec": it["start"],
-            "bbox": bbox,
-            "clip_name": clip_name,
-            "clip_path": clip_path,
-            "thumbnail": thumb_path,
-        })
 
+        clips_meta.append(
+            {
+                "ok": ok,
+                "label": it["label"],
+                "start_sec": it["start"],
+                "bbox": bbox,
+                "clip_name": clip_name,
+                "clip_path": clip_path,
+                "thumbnail": thumb_path,
+            }
+        )
     # DB 반영
     with app.app_context():
         job_row = Job.query.get(job_id)
@@ -581,12 +675,11 @@ def analyze_core(video_path, job_id: str):
 
         if SAVE_VIDEO and os.path.isfile(out_mp4):
             job_row.annotated_video = os.path.join(
-                "/analyzed_videos",
-                os.path.basename(out_mp4)
+                "/analyzed_videos", os.path.basename(out_mp4)
             )
-        job_row.status   = "done"
+        job_row.status = "done"
         job_row.progress = 100.0
-        job_row.message  = "completed"
+        job_row.message = "completed"
 
         for meta in clips_meta:
             if not meta["ok"]:
@@ -599,17 +692,17 @@ def analyze_core(video_path, job_id: str):
                 start_w, start_h = int(x2 - x1), int(y2 - y1)
 
             clip_row = Clip(
-                job_id     = job_id,
-                class_name = meta["label"],
-                checked    = False,
-                start_time = fmt_time_cs(meta["start_sec"]),
-                start_x    = start_x,
-                start_y    = start_y,
-                start_w    = start_w,
-                start_h    = start_h,
-                clip_name  = meta["clip_name"],
-                clip_path  = meta["clip_path"],
-                thumbnail  = meta["thumbnail"],
+                job_id=job_id,
+                class_name=meta["label"],
+                checked=False,
+                start_time=fmt_time_cs(meta["start_sec"]),
+                start_x=start_x,
+                start_y=start_y,
+                start_w=start_w,
+                start_h=start_h,
+                clip_name=meta["clip_name"],
+                clip_path=meta["clip_path"],
+                thumbnail=meta["thumbnail"],
             )
             db.session.add(clip_row)
 
@@ -625,7 +718,7 @@ def analyze():
     """
     try:
         video_path = None
-        username   = None
+        username = None
 
         # form-data 업로드
         if "video" in request.files:
@@ -635,18 +728,23 @@ def analyze():
             save_to = os.path.join(UPLOAD_DIR, f.filename)
             f.save(save_to)
             video_path = save_to
-            username   = request.form.get("username")
+            username = request.form.get("username")
 
         # JSON 요청
         if video_path is None:
             data = request.get_json(silent=True) or {}
             video_path = data.get("video_path")
-            username   = username or data.get("username")
+            username = username or data.get("username")
 
         if not video_path or not os.path.isfile(video_path):
-            return jsonify({
-                "error": "Provide a valid video via form-data 'video' or JSON {'video_path': '...'}"
-            }), 400
+            return (
+                jsonify(
+                    {
+                        "error": "Provide a valid video via form-data 'video' or JSON {'video_path': '...'}"
+                    }
+                ),
+                400,
+            )
 
         if not username:
             username = "guest"
@@ -655,50 +753,85 @@ def analyze():
         with app.app_context():
             job_id = str(uuid.uuid4())
             job_row = Job(
-                job_id          = job_id,
-                username        = username,      # models.Job에 username 컬럼 있어야 함
-                video_path      = video_path,
-                status          = "running",
-                progress        = 0.0,
-                annotated_video = None,
-                message         = "started",
+                job_id=job_id,
+                username=username,  # models.Job에 username 컬럼 있어야 함
+                video_path=video_path,
+                status="running",
+                progress=0.0,
+                annotated_video=None,
+                message="started",
             )
             db.session.add(job_row)
             db.session.commit()
 
         # 백그라운드 분석 시작
-        th = threading.Thread(target=analyze_core, args=(video_path, job_id), daemon=True)
+        th = threading.Thread(
+            target=analyze_core, args=(video_path, job_id), daemon=True
+        )
         th.start()
 
-        return jsonify({
-            "job_id": job_id,
-            "status": "running",
-            "progress": 0.0,
-            "video_path": video_path,
-            "username": username,
-        })
+        return jsonify(
+            {
+                "job_id": job_id,
+                "status": "running",
+                "progress": 0.0,
+                "video_path": video_path,
+                "username": username,
+            }
+        )
 
     except Exception as e:
         import traceback
+
         print("\n[ERROR] /analyze 내부에서 예외 발생:")
         traceback.print_exc()  # 터미널에 전체 스택 출력
-        return jsonify({
-            "error": "internal_error",
-            "detail": str(e),
-        }), 500
+        return (
+            jsonify(
+                {
+                    "error": "internal_error",
+                    "detail": str(e),
+                }
+            ),
+            500,
+        )
 
 
 @app.route("/jobs/<job_id>", methods=["GET"])
 def get_job(job_id):
-    with app.app_context():
-        job_row = Job.query.get(job_id)
-        if not job_row:
-            return jsonify({"error": "job_id not found"}), 404
-        # Job.to_dict(include_clips=False) 안에 username 포함돼 있어야 함
-        return jsonify(job_row.to_dict(include_clips=False))
+    job_row = Job.query.get(job_id)
+    if not job_row:
+        return jsonify({"error": "job_id not found"}), 404
+
+    # 1) 원래 딕셔너리 가져오기
+    data = job_row.to_dict(include_clips=False)
+
+    # 2) DB에 저장된 분석영상 경로 찾기
+    #   - 필드 이름이 정확히 뭔지 모르니까, 여러 후보를 차례대로 시도
+    annotated_path = (
+        data.get("annotated_path")
+        or data.get("annotated_video")
+        or data.get("analyzed_video_path")
+        or getattr(job_row, "annotated_path", None)
+        or getattr(job_row, "annotated_video", None)
+        or getattr(job_row, "analyzed_video_path", None)
+    )
+
+    # 3) 상대 URL로 변환해서 annotated_video_url 추가
+    if annotated_path:
+        fname = basename(str(annotated_path))  # D:\...\xxx.mp4 -> xxx.mp4
+        data["annotated_video_url"] = url_for(
+            "serve_analyzed",  # @app.route("/analyzed_videos/<path:fname>")
+            fname=fname,
+            _external=False,
+        )
+    else:
+        data["annotated_video_url"] = None
+
+    return jsonify(data), 200
 
 
 import os
+
 
 @app.route("/jobs/<job_id>/clips", methods=["GET"])
 def get_clips_by_job(job_id):
@@ -722,10 +855,10 @@ def get_clips_by_job(job_id):
         d["checked"] = bool(getattr(c, "checked", 0))
 
         # 🔹 1) xywh → (x1,y1,x2,y2) start_bbox 로 변환
-        x = c.start_x   # ← 여기를 네 실제 컬럼명으로
-        y = c.start_y   # ← 예: c.x, c.y, c.start_x, c.start_y 등
-        w = c.start_w   # ← 예: c.w, c.width
-        h = c.start_h   # ← 예: c.h, c.height
+        x = c.start_x  # ← 여기를 네 실제 컬럼명으로
+        y = c.start_y  # ← 예: c.x, c.y, c.start_x, c.start_y 등
+        w = c.start_w  # ← 예: c.w, c.width
+        h = c.start_h  # ← 예: c.h, c.height
 
         if None not in (x, y, w, h):
             d["start_bbox"] = {
@@ -769,13 +902,14 @@ def serve_clip(fname):
     return send_from_directory(EVENT_CLIPS_DIR, fname, as_attachment=False)
 
 
-
 @app.route("/thumbnails/<path:fname>", methods=["GET"])
 def serve_thumb(fname):
     path = os.path.join(THUMBS_DIR, fname)
     if not os.path.isfile(path):
         abort(404)
-    return send_from_directory(THUMBS_DIR, fname, as_attachment=False, mimetype="image/jpeg")
+    return send_from_directory(
+        THUMBS_DIR, fname, as_attachment=False, mimetype="image/jpeg"
+    )
 
 
 @app.route("/analyzed_videos/<path:fname>", methods=["GET"])
@@ -788,7 +922,10 @@ def serve_analyzed(fname):
 
 @app.route("/", methods=["GET"])
 def root():
-    return jsonify({"name": "AI Security Guard (ASG)", "status": "ok", "base_url": URL_BASE})
+    return jsonify(
+        {"name": "AI Security Guard (ASG)", "status": "ok", "base_url": URL_BASE}
+    )
+
 
 @app.route("/clips/<int:clip_id>/check", methods=["PATCH"])
 def mark_clip_checked(clip_id):
@@ -802,26 +939,43 @@ def mark_clip_checked(clip_id):
         {"message": "checked set to true", "clip_id": clip_id, "checked": True}
     )
 
+
 @app.route("/jobs/latest", methods=["GET"])
 def get_latest_job_for_user():
-    username = request.args.get("username")
-    if not username:
-        return jsonify({"detail": "username is required"}), 400
+    """
+    username 쿼리파라미터가 와도 일단은 무시하고,
+    jobs 테이블에서 가장 최근 것 하나만 반환.
+    (나중에 username 컬럼 확실해지면 filter_by 추가해도 OK)
+    """
+    try:
+        q = Job.query
 
-    # jobs.db 에서 이 사용자걸 최신순으로 하나만
-    conn = db.connect("jobs.db")
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT job_id FROM jobs WHERE username = ? ORDER BY rowid DESC LIMIT 1",
-        (username,),
-    )
-    row = cur.fetchone()
-    conn.close()
+        # 만약 Job 모델에 username 컬럼이 실제로 있다면,
+        # 아래 주석 풀고 username으로 필터링해도 됨.
+        #
+        # username = request.args.get("username")
+        # if username and hasattr(Job, "username"):
+        #     q = q.filter_by(username=username)
 
-    if not row:
-        return jsonify({"detail": "no jobs for this user"}), 404
+        # created_at 컬럼이 있으면 그걸로, 없으면 id 기준으로 정렬
+        if hasattr(Job, "created_at"):
+            q = q.order_by(Job.created_at.desc())
+        elif hasattr(Job, "id"):
+            q = q.order_by(Job.id.desc())
+        else:
+            # 둘 다 없으면 그냥 job_id 문자열 기준으로라도 정렬
+            q = q.order_by(Job.job_id.desc())
 
-    return jsonify({"job_id": row[0]}), 200
+        job_row = q.first()
+
+        if not job_row:
+            return jsonify({"error": "no jobs"}), 404
+
+        return jsonify({"job_id": job_row.job_id}), 200
+
+    except Exception as e:
+        print("[/jobs/latest] ERROR:", e)
+        return jsonify({"error": "internal server error"}), 500
 
 
 if __name__ == "__main__":
