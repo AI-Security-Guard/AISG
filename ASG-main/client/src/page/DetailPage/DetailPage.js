@@ -21,14 +21,17 @@ function DetailPage() {
 
     const occurredAt = entry?.date ?? "알 수 없음";
     const type = entry?.message ?? "알 수 없음";
-    const coordinate = entry?.start_bbox ?? "-";
     const startBBox = entry?.start_bbox;
 
     let coordinateText = "-";
-    if (startBBox && startBBox.length === 4) {
-        const [x1, y1, x2, y2] = startBBox;
+
+    console.log("startBBox:", startBBox);
+
+    if (startBBox && typeof startBBox === "object") {
+        const { x1, y1, x2, y2 } = startBBox;
         coordinateText = `(${x1}, ${y1}) ~ (${x2}, ${y2})`;
     }
+
 
     const GoBackButtonClick = () => navigate(-1);
     console.log("Detail entry:", entry);

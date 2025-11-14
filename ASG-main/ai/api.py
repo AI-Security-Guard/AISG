@@ -79,10 +79,16 @@ SIZE_FALLBACK    = 224
 
 # ================== API용 경로 (OUT_DIR를 루트로 사용) ==================
 BASE_OUT        = os.path.abspath("./")
-UPLOAD_DIR      = os.path.join(BASE_OUT, "uploads")
-ANALYZED_DIR    = os.path.join(BASE_OUT, "analyzed_videos")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 파일 맨 위쪽 설정부
+#EVENT_CLIPS_DIR = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\event_clips"
+#THUMBS_DIR      = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\thumbnails"
+
 EVENT_CLIPS_DIR = os.path.join(BASE_OUT, "event_clips")
 THUMBS_DIR      = os.path.join(BASE_OUT, "thumbnails")
+UPLOAD_DIR      = os.path.join(BASE_OUT, "uploads")
+ANALYZED_DIR    = os.path.join(BASE_OUT, "analyzed_videos")
 CSV_DIR         = os.path.join(BASE_OUT, "csv_logs")
 
 for d in [BASE_OUT, UPLOAD_DIR, ANALYZED_DIR, EVENT_CLIPS_DIR, THUMBS_DIR, CSV_DIR]:
@@ -155,36 +161,48 @@ def yolo_person_boxes(yolo, frame, conf, min_area_ratio, aspect_min, aspect_max)
         out.append((x1, y1, x2, y2, float(s), int(c)))
     return out
 
+import os
+import cv2
+import shutil
+import subprocess
+
+FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"
 
 def extract_clip(video_path, start_s, end_s, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    has_ffmpeg = shutil.which("ffmpeg") is not None
+
     start_s = max(0.0, float(start_s))
     end_s   = max(start_s, float(end_s))
     dur     = max(0.10, end_s - start_s)
 
-    if has_ffmpeg:
+    # 1) ffmpeg로 먼저 시도 (절대경로 사용)
+    if os.path.isfile(FFMPEG_PATH):
         cmd = [
-            "ffmpeg", "-y",
-            "-ss", f"{start_s:.3f}",
-            "-i", video_path,
-            "-t", f"{dur:.3f}",
+            FFMPEG_PATH, "-y",
+            "-i", video_path,                 # 먼저 입력
+            "-ss", f"{start_s:.3f}",          # 그 다음 시작 시간
+            "-t",  f"{dur:.3f}",
             "-c:v", "libx264",
             "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
-            "-movflags", "faststart",
+            "-movflags", "+faststart",
             "-loglevel", "error",
-            out_path
+            out_path,
         ]
-        rc = subprocess.run(cmd).returncode
-        if rc == 0 and os.path.isfile(out_path):
-            return True
+        try:
+            rc = subprocess.run(cmd).returncode
+            if rc == 0 and os.path.isfile(out_path):
+                return True
+        except FileNotFoundError:
+            # ffmpeg.exe 경로가 잘못됐거나 실행 불가한 경우 → 아래 OpenCV fallback으로
+            pass
 
-    # OpenCV fallback
+    # 2) OpenCV fallback
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return False
+
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     W   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -193,9 +211,11 @@ def extract_clip(video_path, start_s, end_s, out_path):
     if not vw.isOpened():
         cap.release()
         return False
+
     start_f = int(round(start_s * fps))
     end_f   = int(round(end_s   * fps))
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+
     fidx = start_f
     ok = True
     while fidx < end_f:
@@ -205,9 +225,11 @@ def extract_clip(video_path, start_s, end_s, out_path):
             break
         vw.write(fr)
         fidx += 1
+
     vw.release()
     cap.release()
     return ok and os.path.isfile(out_path)
+
 
 
 def save_thumbnail(video_path, t_sec, out_dir, name_stub):
@@ -692,29 +714,41 @@ def get_clips_by_job(job_id):
         "clips": [],
     }
 
+    from os.path import basename
+
     for c in clips:
         d = c.to_dict()
 
         d["checked"] = bool(getattr(c, "checked", 0))
 
-        # 1) 🔹 동영상 URL
+        # 🔹 1) xywh → (x1,y1,x2,y2) start_bbox 로 변환
+        x = c.start_x   # ← 여기를 네 실제 컬럼명으로
+        y = c.start_y   # ← 예: c.x, c.y, c.start_x, c.start_y 등
+        w = c.start_w   # ← 예: c.w, c.width
+        h = c.start_h   # ← 예: c.h, c.height
+
+        if None not in (x, y, w, h):
+            d["start_bbox"] = {
+                "x1": x,
+                "y1": y,
+                "x2": x + w,
+                "y2": y + h,
+            }
+        else:
+            d["start_bbox"] = None
+
+        # 🔹 2) 클립 URL
         clip_name = d.get("clip_name")
         if clip_name:
-            d["clip_url"] = url_for(
-                "serve_clip",           # ← 함수 이름
-                fname=clip_name,        # ← <path:fname> 이라서 fname=
-                _external=False,
-            )
+            d["clip_url"] = url_for("serve_clip", fname=clip_name, _external=False)
         else:
             d["clip_url"] = None
 
-        # 2) 🔹 썸네일 URL
+        # 🔹 3) 썸네일 URL
         thumb_name = d.get("thumbnail") or d.get("thumb_path")
         if thumb_name:
             d["thumb_url"] = url_for(
-                "serve_thumb",              # ← 썸네일 함수 이름
-                fname=basename(thumb_name), # 전체 경로 들어있을 수도 있으니 파일명만
-                _external=False,
+                "serve_thumb", fname=basename(thumb_name), _external=False
             )
         else:
             d["thumb_url"] = None
@@ -728,9 +762,12 @@ def get_clips_by_job(job_id):
 @app.route("/event_clips/<path:fname>", methods=["GET"])
 def serve_clip(fname):
     path = os.path.join(EVENT_CLIPS_DIR, fname)
+    print("[serve_clip] path =", path, "exists:", os.path.isfile(path))
+
     if not os.path.isfile(path):
         abort(404)
     return send_from_directory(EVENT_CLIPS_DIR, fname, as_attachment=False)
+
 
 
 @app.route("/thumbnails/<path:fname>", methods=["GET"])
@@ -764,6 +801,28 @@ def mark_clip_checked(clip_id):
     return jsonify(
         {"message": "checked set to true", "clip_id": clip_id, "checked": True}
     )
+
+@app.route("/jobs/latest", methods=["GET"])
+def get_latest_job_for_user():
+    username = request.args.get("username")
+    if not username:
+        return jsonify({"detail": "username is required"}), 400
+
+    # jobs.db 에서 이 사용자걸 최신순으로 하나만
+    conn = db.connect("jobs.db")
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT job_id FROM jobs WHERE username = ? ORDER BY rowid DESC LIMIT 1",
+        (username,),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({"detail": "no jobs for this user"}), 404
+
+    return jsonify({"job_id": row[0]}), 200
+
 
 if __name__ == "__main__":
     try:
