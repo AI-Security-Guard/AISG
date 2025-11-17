@@ -1,23 +1,16 @@
-# app.py
-# 🧠 AI Security Guard (ASG) — Video Analysis API
-
 import os, sys, csv, cv2, numpy as np, torch, warnings, uuid, threading, shutil, subprocess
 from collections import deque
 from flask import Flask, request, jsonify, send_from_directory, abort, url_for
 from pytorchvideo.models.hub import slowfast_r50
 from ultralytics import YOLO
 from os.path import basename
-from flask_cors import CORS  # 🔥 추가
-
-# 🔗 DB / Models (User 안 씀)
-import sys, os
+from flask_cors import CORS
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from server.models import db, Job, Clip
 
 
-# ================== Flask & DB 초기화 ==================
+# Flask & DB 초기화
 app = Flask(__name__)
 
 DB_PATH = os.path.join(
@@ -26,7 +19,6 @@ DB_PATH = os.path.join(
 DB_PATH = os.path.abspath(DB_PATH)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
-
 
 CORS(
     app,
@@ -39,16 +31,19 @@ db.init_app(app)
 with app.app_context():
     db.create_all()
 
-# ================== (원본) Config 그대로 ==================
+# Config
 CKPT = r".\result\ckpt.pt"
 YOLO_WEIGHTS = r".\result\best.pt"
 SAVE_VIDEO = True
 SAVE_CSV = False
 
-# --- (임시) 비활성화할 클래스들 ---
+# (임시)비활성화할 클래스들
 DISABLE_CLASSES = {"vandalism"}
 
-# --- Detection / ROI gating ---
+# ffmpeg 절대경로 (필요시 수정하세요)
+FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"
+
+# Detection / ROI gating
 PERSON_CONF = 0.55
 MIN_AREA_RATIO = 0.0035
 ASPECT_MIN, ASPECT_MAX = 0.25, 0.90
@@ -57,38 +52,85 @@ ROI_SCALE = 1.45
 ROI_MIN_AREA_RATIO = 0.02
 BG_MODE = "gray"  # or "blur"
 
-# --- SlowFast sampling & norm ---
+# SlowFast sampling & norm
 warnings.filterwarnings(
     "ignore", category=FutureWarning, message="You are using torch.load"
 )
 MEAN = torch.tensor([0.45, 0.45, 0.45]).view(1, 3, 1, 1, 1)
 STD = torch.tensor([0.225, 0.225, 0.225]).view(1, 3, 1, 1, 1)
 
-# --- Temporal Stabilization ---
+# Temporal Stabilization
 LOGIT_EMA = 0.70
-MARGIN_MIN = 0.08
-SWITCH_DELTA = 0.10
-SWITCH_CONSEC = 4
+MARGIN_MIN = 0.10
+SWITCH_DELTA = 0.12
+SWITCH_CONSEC = 5
 MIN_HOLD = {
-    "assault": 32,
-    "swoon": 60,
+    "assault": 48,
+    "swoon": 90,
     "trespass": 40,
 }
 MIN_SHOW_CONF = 0.30
 
-# --- Fallbacks ---
+# Fallbacks
 T_FAST_FALLBACK = 32
 ALPHA_FALLBACK = 4
 SIZE_FALLBACK = 224
 
-# ================== API용 경로 (OUT_DIR를 루트로 사용) ==================
+# Rule pack: assault / trespass
+CLASS_SCALE = {"assault": 1.10, "trespass": 1.00, "swoon": 1.00}
+
+# Assault
+ASSAULT_MIN_PEOPLE = 2
+ASSAULT_NEAR_THRESH = 0.15
+ASSAULT_MOTION_GATE = 7.0
+ASSAULT_BOOST = 1.50
+ASSAULT_DAMP_SINGLE = 0.60
+KICK_RATIO_THRESH = 1.35
+KICK_MOTION_THRESH = 8.0
+KICK_BOOST = 1.25
+SWING_EDGE_THRESH = 12.0
+SWING_NEAR_THRESH = 0.18
+SWING_BOOST = 1.20
+QUIET_MOTION_THRESH = 5.0
+WEAK_KICK_RATIO = 1.10
+WEAK_SWING = 8.0
+SOLO_SUPPRESS_ASSAULT = 0.25
+ASSAULT_CONTRA_FRAMES = 10
+ASSAULT_SUPPRESS_TRESPASS = 0.80
+
+# Trespass (no-zone): relax thresholds
+EDGE_MARGIN_RATIO = 0.08
+MIN_OUTSIDE_FOR_ENTRY_FR = 8
+CENTRAL_MARGIN_RATIO = 0.22
+TRESPASS_STAY_FR = 12
+TRESPASS_BOOST = 1.35
+TRESPASS_DAMP_WANDER = 0.80
+MIN_INWARD_SPEED_NORM = 0.0025
+MIN_INWARD_DEPTH_RATIO = 0.12
+ENTRY_TIMEOUT_FR = 75
+
+# Pre-entry loiter → entry boost
+LOITER_WINDOW_FR = 45
+LOITER_EDGE_BAND = 0.12
+LOITER_RADIUS_NORM = 0.04
+LOITER_ENTRY_BOOST = 1.25
+
+# Fence jump heuristic
+JUMP_WIN_FR = 16
+JUMP_VY_SPIKE = 0.018
+JUMP_TOTAL_DY = 0.08
+JUMP_ENTRY_BOOST = 1.30
+JUMP_STAY_RELAX = 10
+
+# NEW: "새로 등장" 진입(문 열고 들어오기 등)
+NEW_APPEAR_WINDOW_FR = 30
+NEW_APPEAR_CEN_REQ = 4
+NEW_APPEAR_ENTRY_BOOST = 1.20
+
+
+# API용 경로
 BASE_OUT = os.path.abspath("./")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# 파일 맨 위쪽 설정부
-# EVENT_CLIPS_DIR = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\event_clips"
-# THUMBS_DIR      = r"D:\PycharmProjects\pythonProject1\ASG-main\ai\thumbnails"
-
 EVENT_CLIPS_DIR = os.path.join(BASE_OUT, "event_clips")
 THUMBS_DIR = os.path.join(BASE_OUT, "thumbnails")
 UPLOAD_DIR = os.path.join(BASE_OUT, "uploads")
@@ -101,7 +143,7 @@ for d in [BASE_OUT, UPLOAD_DIR, ANALYZED_DIR, EVENT_CLIPS_DIR, THUMBS_DIR, CSV_D
 URL_BASE = "http://127.0.0.1:5001"
 
 
-# ================== 유틸 함수 ==================
+# 유틸 함수
 def center_crop_rgb(bgr, size):
     img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     h, w = img.shape[:2]
@@ -167,30 +209,19 @@ def yolo_person_boxes(yolo, frame, conf, min_area_ratio, aspect_min, aspect_max)
     return out
 
 
-import os
-import cv2
-import shutil
-import subprocess
-
-FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"
-
-
 def extract_clip(video_path, start_s, end_s, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
     start_s = max(0.0, float(start_s))
     end_s = max(start_s, float(end_s))
     dur = max(0.10, end_s - start_s)
-
-    # 1) ffmpeg로 먼저 시도 (절대경로 사용)
     if os.path.isfile(FFMPEG_PATH):
         cmd = [
             FFMPEG_PATH,
             "-y",
             "-i",
-            video_path,  # 먼저 입력
+            video_path,
             "-ss",
-            f"{start_s:.3f}",  # 그 다음 시작 시간
+            f"{start_s:.3f}",
             "-t",
             f"{dur:.3f}",
             "-c:v",
@@ -212,14 +243,10 @@ def extract_clip(video_path, start_s, end_s, out_path):
             if rc == 0 and os.path.isfile(out_path):
                 return True
         except FileNotFoundError:
-            # ffmpeg.exe 경로가 잘못됐거나 실행 불가한 경우 → 아래 OpenCV fallback으로
             pass
-
-    # 2) OpenCV fallback
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return False
-
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -228,11 +255,9 @@ def extract_clip(video_path, start_s, end_s, out_path):
     if not vw.isOpened():
         cap.release()
         return False
-
     start_f = int(round(start_s * fps))
     end_f = int(round(end_s * fps))
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
-
     fidx = start_f
     ok = True
     while fidx < end_f:
@@ -242,22 +267,15 @@ def extract_clip(video_path, start_s, end_s, out_path):
             break
         vw.write(fr)
         fidx += 1
-
     vw.release()
     cap.release()
     return ok and os.path.isfile(out_path)
 
 
 def reencode_to_h264(in_path: str):
-    """
-    OpenCV로 만든 mp4를 ffmpeg로 H.264(yuv420p)로 재인코딩해서
-    브라우저에서 더 안정적으로 재생되도록 만든다.
-    """
     if not (os.path.isfile(FFMPEG_PATH) and os.path.isfile(in_path)):
         return
-
     tmp_out = in_path + ".h264.mp4"
-
     cmd = [
         FFMPEG_PATH,
         "-y",
@@ -279,7 +297,6 @@ def reencode_to_h264(in_path: str):
     ]
     rc = subprocess.run(cmd).returncode
     if rc == 0 and os.path.isfile(tmp_out):
-        # 원본 파일을 H.264 버전으로 교체
         os.replace(tmp_out, in_path)
 
 
@@ -314,7 +331,6 @@ def fmt_time(sec: float):
 
 
 def fmt_time_cs(sec: float):
-    """HH:MM:SS.cc 형식 (clips.start_time 용)"""
     sec = max(0.0, float(sec))
     h = int(sec // 3600)
     m = int((sec % 3600) // 60)
@@ -323,7 +339,7 @@ def fmt_time_cs(sec: float):
     return f"{h:02d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-# ================== 전역 모델 핸들 ==================
+# 전역 모델 핸들
 _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _SF = None
 _CLASSES = None
@@ -352,13 +368,8 @@ def ensure_models_loaded():
         _SF = model
 
 
-# ================== 분석 코어 (DB 연동) ==================
+# 분석
 def analyze_core(video_path, job_id: str):
-    """
-    - stabilized pred_label로 interval 생성
-    - 클립/썸네일 생성
-    - jobs / clips 테이블에 저장
-    """
     ensure_models_loaded()
 
     cap = cv2.VideoCapture(video_path)
@@ -376,20 +387,11 @@ def analyze_core(video_path, job_id: str):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    print("========== DEBUG VIDEO INFO ==========")
-    print(f"video_path: {video_path}")
-    print(f"fps:          {fps}")
-    print(f"total_frames: {total_frames}")
-    print(f"W,H:          {W}, {H}")
-    print("======================================")
-
     stem = os.path.splitext(os.path.basename(video_path))[0]
     out_mp4 = os.path.join(ANALYZED_DIR, f"{stem}_analyze.mp4")
     out_csv = os.path.join(CSV_DIR, f"{stem}_stable.csv")
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(out_mp4, fourcc, fps, (W, H)) if SAVE_VIDEO else None
-
     buf = deque(maxlen=_T_FAST)
     rows = []
     no_person_streak = 0
@@ -398,8 +400,24 @@ def analyze_core(video_path, job_id: str):
     current_label = ""
     hold_count = 0
     switch_count = 0
-
-    active = None  # {"label": str, "start_f": int, "start_bbox": [x1,y1,x2,y2] | None}
+    last_gray_rule = None
+    last_edge_rule = None
+    last_mean_center = None
+    outside_streak = 0
+    entry_armed = False
+    entry_happened = False
+    armed_edge = None
+    armed_center = None
+    armed_frames = 0
+    central_streak = 0
+    edge_centers = deque(maxlen=LOITER_WINDOW_FR)
+    vy_buffer = deque(maxlen=JUMP_WIN_FR)
+    last_person_count = 0
+    spawn_armed = False
+    spawn_timer = 0
+    assault_contra = 0
+    solo_suppressed = False
+    active = None
     intervals = []
 
     try:
@@ -409,11 +427,7 @@ def analyze_core(video_path, job_id: str):
                 break
             frame_idx += 1
 
-            # 진행률 갱신 (10프레임마다)
             if total_frames > 0 and frame_idx % 10 == 0:
-                print(
-                    f"[DEBUG] progress trigger: frame_idx={frame_idx}, total_frames={total_frames}"
-                )
                 with app.app_context():
                     job_row = Job.query.get(job_id)
                     if job_row:
@@ -433,7 +447,6 @@ def analyze_core(video_path, job_id: str):
                 bg_mode=BG_MODE,
             )
 
-            # === ROI 없을 때: normal로 표시 ===
             if roi is None:
                 no_person_streak += 1
                 if no_person_streak >= NO_PERSON_CLEAR:
@@ -442,6 +455,23 @@ def analyze_core(video_path, job_id: str):
                     current_label = ""
                     hold_count = 0
                     switch_count = 0
+                    last_gray_rule = None
+                    last_edge_rule = None
+                    last_mean_center = None
+                    outside_streak = 0
+                    entry_armed = False
+                    entry_happened = False
+                    armed_edge = None
+                    armed_center = None
+                    armed_frames = 0
+                    central_streak = 0
+                    edge_centers.clear()
+                    vy_buffer.clear()
+                    last_person_count = 0
+                    spawn_armed = False
+                    spawn_timer = 0
+                    assault_contra = 0
+                    solo_suppressed = False
 
                 vis = frame.copy()
                 cv2.putText(
@@ -464,6 +494,190 @@ def analyze_core(video_path, job_id: str):
                 continue
             else:
                 no_person_streak = 0
+
+            Hf, Wf = frame.shape[:2]
+            diag = (Hf**2 + Wf**2) ** 0.5
+
+            centers = []
+            for (x1, y1, x2, y2, *_) in dets:
+                cx = (x1 + x2) / 2.0
+                cy = (y1 + y2) / 2.0
+                centers.append((cx, cy))
+
+            mean_center = None
+            if centers:
+                mean_center = (
+                    float(np.mean([c[0] for c in centers])),
+                    float(np.mean([c[1] for c in centers])),
+                )
+
+            v = (0.0, 0.0)
+            vy_norm = 0.0
+            if mean_center is not None and last_mean_center is not None:
+                dx = mean_center[0] - last_mean_center[0]
+                dy = mean_center[1] - last_mean_center[1]
+                v = (dx, dy)
+                vy_norm = dy / max(1.0, Hf)
+            last_mean_center = mean_center
+
+            min_pair_dist = 1.0
+            if len(centers) >= 2:
+                for i in range(len(centers)):
+                    for j in range(i + 1, len(centers)):
+                        dx = centers[i][0] - centers[j][0]
+                        dy = centers[i][1] - centers[j][1]
+                        d = (dx * dx + dy * dy) ** 0.5 / max(1.0, diag)
+                        if d < min_pair_dist:
+                            min_pair_dist = d
+
+            roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            motion_val = 0.0
+            diff = None
+            if last_gray_rule is not None and last_gray_rule.shape == roi_gray.shape:
+                diff = cv2.absdiff(roi_gray, last_gray_rule)
+                motion_val = float(np.mean(diff))
+            last_gray_rule = roi_gray
+
+            kick_ratio = 0.0
+            lower_val = 0.0
+            upper_val = 0.0
+            if diff is not None:
+                h2 = diff.shape[0] // 2
+                upper_val = float(np.mean(diff[:h2, :]))
+                lower_val = float(np.mean(diff[h2:, :]))
+                kick_ratio = lower_val / max(1e-5, upper_val)
+
+            swing_val = 0.0
+            edges = cv2.Canny(roi_gray, 50, 150)
+            if last_edge_rule is not None and last_edge_rule.shape == edges.shape:
+                ediff = cv2.absdiff(edges, last_edge_rule)
+                h2 = edges.shape[0] // 2
+                swing_val = float(np.mean(ediff[:h2, :]))
+            last_edge_rule = edges
+
+            edge_margin_w = EDGE_MARGIN_RATIO * Wf
+            edge_margin_h = EDGE_MARGIN_RATIO * Hf
+            near_edge = False
+            nearest_edge = None
+            if mean_center is not None:
+                x, y = mean_center
+                dists = {"left": x, "right": Wf - x, "top": y, "bottom": Hf - y}
+                nearest_edge = min(dists, key=dists.get)
+                if (
+                    (x < edge_margin_w)
+                    or (x > Wf - edge_margin_w)
+                    or (y < edge_margin_h)
+                    or (y > Hf - edge_margin_h)
+                ):
+                    near_edge = True
+
+            if mean_center is not None:
+                x, y = mean_center
+                if (
+                    (x < LOITER_EDGE_BAND * Wf)
+                    or (x > (1 - LOITER_EDGE_BAND) * Wf)
+                    or (y < LOITER_EDGE_BAND * Hf)
+                    or (y > (1 - LOITER_EDGE_BAND) * Hf)
+                ):
+                    edge_centers.append((x, y))
+                else:
+                    edge_centers.clear()
+
+            if near_edge:
+                outside_streak += 1
+                if outside_streak >= MIN_OUTSIDE_FOR_ENTRY_FR:
+                    entry_armed = True
+                    armed_edge = nearest_edge
+                    armed_center = mean_center
+                    armed_frames = 0
+            else:
+                outside_streak = 0
+
+            if entry_armed:
+                armed_frames += 1
+                if armed_frames > ENTRY_TIMEOUT_FR:
+                    entry_armed = False
+                    armed_edge = None
+                    armed_center = None
+                    armed_frames = 0
+                    entry_happened = False
+
+            if (
+                entry_armed
+                and mean_center is not None
+                and armed_center is not None
+                and armed_edge is not None
+            ):
+                normals = {
+                    "left": (1, 0),
+                    "right": (-1, 0),
+                    "top": (0, 1),
+                    "bottom": (0, -1),
+                }
+                nx, ny = normals[armed_edge]
+                inward_speed = (v[0] * nx + v[1] * ny) / max(1.0, diag)
+                depth_pix = (mean_center[0] - armed_center[0]) * nx + (
+                    mean_center[1] - armed_center[1]
+                ) * ny
+                denom = Wf if armed_edge in ("left", "right") else Hf
+                depth_ratio = (depth_pix / denom) if depth_pix > 0 else 0.0
+                if (
+                    inward_speed >= MIN_INWARD_SPEED_NORM
+                    and depth_ratio >= MIN_INWARD_DEPTH_RATIO
+                ):
+                    entry_happened = True
+                    entry_armed = False
+                    armed_edge = None
+                    armed_center = None
+                    armed_frames = 0
+
+            central = False
+            if mean_center is not None:
+                cx_, cy_ = mean_center
+                cmx = CENTRAL_MARGIN_RATIO * Wf
+                cmy = CENTRAL_MARGIN_RATIO * Hf
+                if (cmx <= cx_ <= Wf - cmx) and (cmy <= cy_ <= Hf - cmy):
+                    central = True
+            if central and entry_happened:
+                central_streak += 1
+            else:
+                central_streak = max(0, central_streak - 1)
+
+            loiter_boost = 1.0
+            if len(edge_centers) >= LOITER_WINDOW_FR:
+                xs = np.array([p[0] for p in edge_centers])
+                ys = np.array([p[1] for p in edge_centers])
+                cx_, cy_ = xs.mean(), ys.mean()
+                rad = np.mean(np.sqrt((xs - cx_) ** 2 + (ys - cy_) ** 2)) / max(
+                    1.0, np.sqrt(Wf * Wf + Hf * Hf)
+                )
+                if rad >= LOITER_RADIUS_NORM:
+                    loiter_boost = LOITER_ENTRY_BOOST
+
+            jump_boost = 1.0
+            if mean_center is not None:
+                vy_buffer.append(vy_norm)
+                if len(vy_buffer) >= 4:
+                    total_dy = abs(sum(vy_buffer))
+                    max_vy = max(abs(x) for x in vy_buffer)
+                    if max_vy >= JUMP_VY_SPIKE and total_dy >= JUMP_TOTAL_DY:
+                        jump_boost = JUMP_ENTRY_BOOST
+
+            person_count = len(dets)
+            if person_count > last_person_count:
+                spawn_armed = True
+                spawn_timer = 0
+            last_person_count = person_count
+            if spawn_armed:
+                spawn_timer += 1
+                if spawn_timer > NEW_APPEAR_WINDOW_FR:
+                    spawn_armed = False
+
+            spawn_boost = 1.0
+            if spawn_armed and central_streak >= NEW_APPEAR_CEN_REQ:
+                entry_happened = True
+                spawn_boost = NEW_APPEAR_ENTRY_BOOST
+                spawn_armed = False
 
             rgb = center_crop_rgb(roi, _SIZE)
             buf.append(rgb)
@@ -491,17 +705,88 @@ def analyze_core(video_path, job_id: str):
                     if cls in DISABLE_CLASSES:
                         mask[i] = 0.0
                 p = p * mask
+
+                for i, cls in enumerate(_CLASSES):
+                    p[i] *= CLASS_SCALE.get(cls, 1.0)
+
+                # Assault 규칙
+                assault_like = False
+                if "assault" in _CLASSES:
+                    ia = _CLASSES.index("assault")
+                    base_cond = (
+                        len(centers) >= ASSAULT_MIN_PEOPLE
+                        and min_pair_dist <= ASSAULT_NEAR_THRESH
+                        and motion_val >= ASSAULT_MOTION_GATE
+                    )
+                    kick_cond = (
+                        kick_ratio >= KICK_RATIO_THRESH
+                        and lower_val >= KICK_MOTION_THRESH
+                    )
+                    swing_cond = (
+                        swing_val >= SWING_EDGE_THRESH
+                        and min_pair_dist <= SWING_NEAR_THRESH
+                    )
+                    if base_cond:
+                        p[ia] *= ASSAULT_BOOST
+                        assault_like = True
+                    if kick_cond:
+                        p[ia] *= KICK_BOOST
+                        assault_like = True
+                    if swing_cond:
+                        p[ia] *= SWING_BOOST
+                        assault_like = True
+                    if (
+                        len(centers) < 2
+                        and motion_val < QUIET_MOTION_THRESH
+                        and kick_ratio < WEAK_KICK_RATIO
+                        and swing_val < WEAK_SWING
+                    ):
+                        p[ia] *= SOLO_SUPPRESS_ASSAULT
+                        solo_suppressed = True
+
+                # Trespass 규칙
+                if "trespass" in _CLASSES:
+                    it = _CLASSES.index("trespass")
+                    if entry_happened and central_streak >= TRESPASS_STAY_FR:
+                        p[it] *= (
+                            TRESPASS_BOOST * loiter_boost * jump_boost * spawn_boost
+                        )
+                    else:
+                        p[it] *= TRESPASS_DAMP_WANDER
+                    if assault_like:
+                        p[it] *= ASSAULT_SUPPRESS_TRESPASS
+
+                # 정규화
                 s = float(p.sum())
                 if s > 1e-8:
                     p /= s
                 else:
                     p[:] = 0.0
 
+                # EMA
                 if p_ema is None:
                     p_ema = p.copy()
                 else:
                     p_ema = LOGIT_EMA * p_ema + (1.0 - LOGIT_EMA) * p
 
+                # assault 모순 해제
+                if "assault" in _CLASSES:
+                    if (
+                        len(centers) < 2 or min_pair_dist > 0.30
+                    ) and motion_val < QUIET_MOTION_THRESH:
+                        assault_contra += 1
+                    else:
+                        assault_contra = 0
+                    if (
+                        current_label == "assault"
+                        and assault_contra >= ASSAULT_CONTRA_FRAMES
+                    ):
+                        current_label = ""
+                        hold_count = 0
+                        switch_count = 0
+                        assault_contra = 0
+
+                # 히스테리시스
                 order = np.argsort(-p_ema)
                 k1 = int(order[0])
                 k2 = int(order[1] if len(order) > 1 else order[0])
@@ -550,12 +835,12 @@ def analyze_core(video_path, job_id: str):
                     }
                 else:
                     if active["label"] != pred_label:
-                        s = active["start_f"] / fps
-                        e = frame_idx / fps
+                        s_int = active["start_f"] / fps
+                        e_int = frame_idx / fps
                         intervals.append(
                             {
-                                "start": s,
-                                "end": e,
+                                "start": s_int,
+                                "end": e_int,
                                 "label": active["label"],
                                 "bbox": active["start_bbox"],
                             }
@@ -567,26 +852,31 @@ def analyze_core(video_path, job_id: str):
                         }
             else:
                 if active is not None:
-                    s = active["start_f"] / fps
-                    e = frame_idx / fps
+                    s_int = active["start_f"] / fps
+                    e_int = frame_idx / fps
                     intervals.append(
                         {
-                            "start": s,
-                            "end": e,
+                            "start": s_int,
+                            "end": e_int,
                             "label": active["label"],
                             "bbox": active["start_bbox"],
                         }
                     )
                     active = None
 
-            # 오버레이/저장
             vis = frame.copy()
-            # pred_label 없으면 화면에는 normal로
             title = f"{pred_label} {pred_conf}" if pred_label else "normal"
 
             for (x1, y1, x2, y2, *_) in dets:
                 cv2.rectangle(
-                    vis, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2
+                    vis,
+                    (
+                        int(x1),
+                        int(y1),
+                    ),
+                    (int(x2), int(y2)),
+                    (0, 255, 0),
+                    2,
                 )
             cv2.putText(
                 vis, title, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2
@@ -602,14 +892,13 @@ def analyze_core(video_path, job_id: str):
                     }
                 )
 
-        # 루프 종료 후 active 마무리
         if active is not None:
-            s = active["start_f"] / fps
-            e = frame_idx / fps
+            s_int = active["start_f"] / fps
+            e_int = frame_idx / fps
             intervals.append(
                 {
-                    "start": s,
-                    "end": e,
+                    "start": s_int,
+                    "end": e_int,
                     "label": active["label"],
                     "bbox": active["start_bbox"],
                 }
@@ -631,25 +920,20 @@ def analyze_core(video_path, job_id: str):
     if SAVE_VIDEO and os.path.isfile(out_mp4):
         reencode_to_h264(out_mp4)
 
-    # CSV 저장
     if SAVE_CSV and rows:
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=["frame", "pred", "conf"])
             w.writeheader()
             w.writerows(rows)
 
-    # 클립 / 썸네일 생성
     clips_meta = []
     for i, it in enumerate(intervals, 1):
-        # 🔹 원래처럼 원본 파일명 기준으로 clip 이름 생성
         base = os.path.splitext(os.path.basename(video_path))[0]
         clip_name = f"{base}_clip{i}.mp4"
         clip_path = os.path.join(EVENT_CLIPS_DIR, clip_name)
 
-        # 🔥 분석된 영상(out_mp4)에서 자르기
         ok = extract_clip(out_mp4, it["start"], it["end"], clip_path)
 
-        # 🔹 썸네일도 분석된 영상 기준
         mid_t = (it["start"] + it["end"]) / 2.0
         thumb_stub = f"{base}_clip{i}"
         thumb_path = save_thumbnail(out_mp4, mid_t, THUMBS_DIR, thumb_stub)
@@ -667,7 +951,7 @@ def analyze_core(video_path, job_id: str):
                 "thumbnail": thumb_path,
             }
         )
-    # DB 반영
+
     with app.app_context():
         job_row = Job.query.get(job_id)
         if not job_row:
@@ -709,18 +993,12 @@ def analyze_core(video_path, job_id: str):
         db.session.commit()
 
 
-# ================== Flask Routes ==================
+# Flask Routes
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    """
-    업로드 또는 JSON {"video_path": "...", "username": "..."} 둘 다 지원
-    응답: {job_id, status, progress, video_path, username}
-    """
     try:
         video_path = None
         username = None
-
-        # form-data 업로드
         if "video" in request.files:
             f = request.files["video"]
             if not f.filename:
@@ -729,13 +1007,10 @@ def analyze():
             f.save(save_to)
             video_path = save_to
             username = request.form.get("username")
-
-        # JSON 요청
         if video_path is None:
             data = request.get_json(silent=True) or {}
             video_path = data.get("video_path")
             username = username or data.get("username")
-
         if not video_path or not os.path.isfile(video_path):
             return (
                 jsonify(
@@ -745,16 +1020,13 @@ def analyze():
                 ),
                 400,
             )
-
         if not username:
             username = "guest"
-
-        # DB에 Job 생성 (username 문자열만 저장)
         with app.app_context():
             job_id = str(uuid.uuid4())
             job_row = Job(
                 job_id=job_id,
-                username=username,  # models.Job에 username 컬럼 있어야 함
+                username=username,
                 video_path=video_path,
                 status="running",
                 progress=0.0,
@@ -763,13 +1035,10 @@ def analyze():
             )
             db.session.add(job_row)
             db.session.commit()
-
-        # 백그라운드 분석 시작
         th = threading.Thread(
             target=analyze_core, args=(video_path, job_id), daemon=True
         )
         th.start()
-
         return jsonify(
             {
                 "job_id": job_id,
@@ -779,12 +1048,11 @@ def analyze():
                 "username": username,
             }
         )
-
     except Exception as e:
         import traceback
 
         print("\n[ERROR] /analyze 내부에서 예외 발생:")
-        traceback.print_exc()  # 터미널에 전체 스택 출력
+        traceback.print_exc()
         return (
             jsonify(
                 {
@@ -801,12 +1069,7 @@ def get_job(job_id):
     job_row = Job.query.get(job_id)
     if not job_row:
         return jsonify({"error": "job_id not found"}), 404
-
-    # 1) 원래 딕셔너리 가져오기
     data = job_row.to_dict(include_clips=False)
-
-    # 2) DB에 저장된 분석영상 경로 찾기
-    #   - 필드 이름이 정확히 뭔지 모르니까, 여러 후보를 차례대로 시도
     annotated_path = (
         data.get("annotated_path")
         or data.get("annotated_video")
@@ -815,22 +1078,16 @@ def get_job(job_id):
         or getattr(job_row, "annotated_video", None)
         or getattr(job_row, "analyzed_video_path", None)
     )
-
-    # 3) 상대 URL로 변환해서 annotated_video_url 추가
     if annotated_path:
-        fname = basename(str(annotated_path))  # D:\...\xxx.mp4 -> xxx.mp4
+        fname = basename(str(annotated_path))
         data["annotated_video_url"] = url_for(
-            "serve_analyzed",  # @app.route("/analyzed_videos/<path:fname>")
+            "serve_analyzed",
             fname=fname,
             _external=False,
         )
     else:
         data["annotated_video_url"] = None
-
     return jsonify(data), 200
-
-
-import os
 
 
 @app.route("/jobs/<job_id>/clips", methods=["GET"])
@@ -838,7 +1095,6 @@ def get_clips_by_job(job_id):
     job = Job.query.filter_by(job_id=job_id).first()
     if not job:
         return jsonify({"detail": "Job not found"}), 404
-
     clips = Clip.query.filter_by(job_id=job_id).order_by(Clip.start_time).all()
     result = {
         "job_id": job.job_id,
@@ -846,20 +1102,13 @@ def get_clips_by_job(job_id):
         "count": len(clips),
         "clips": [],
     }
-
-    from os.path import basename
-
     for c in clips:
         d = c.to_dict()
-
         d["checked"] = bool(getattr(c, "checked", 0))
-
-        # 🔹 1) xywh → (x1,y1,x2,y2) start_bbox 로 변환
-        x = c.start_x  # ← 여기를 네 실제 컬럼명으로
-        y = c.start_y  # ← 예: c.x, c.y, c.start_x, c.start_y 등
-        w = c.start_w  # ← 예: c.w, c.width
-        h = c.start_h  # ← 예: c.h, c.height
-
+        x = c.start_x
+        y = c.start_y
+        w = c.start_w
+        h = c.start_h
         if None not in (x, y, w, h):
             d["start_bbox"] = {
                 "x1": x,
@@ -869,15 +1118,11 @@ def get_clips_by_job(job_id):
             }
         else:
             d["start_bbox"] = None
-
-        # 🔹 2) 클립 URL
         clip_name = d.get("clip_name")
         if clip_name:
             d["clip_url"] = url_for("serve_clip", fname=clip_name, _external=False)
         else:
             d["clip_url"] = None
-
-        # 🔹 3) 썸네일 URL
         thumb_name = d.get("thumbnail") or d.get("thumb_path")
         if thumb_name:
             d["thumb_url"] = url_for(
@@ -885,18 +1130,13 @@ def get_clips_by_job(job_id):
             )
         else:
             d["thumb_url"] = None
-
         result["clips"].append(d)
-
     return jsonify(result), 200
 
 
-# 파일 서빙
 @app.route("/event_clips/<path:fname>", methods=["GET"])
 def serve_clip(fname):
     path = os.path.join(EVENT_CLIPS_DIR, fname)
-    print("[serve_clip] path =", path, "exists:", os.path.isfile(path))
-
     if not os.path.isfile(path):
         abort(404)
     return send_from_directory(EVENT_CLIPS_DIR, fname, as_attachment=False)
@@ -933,7 +1173,6 @@ def mark_clip_checked(clip_id):
     if not clip:
         return jsonify({"error": "Clip not found"}), 404
     clip.checked = True
-
     db.session.commit()
     return jsonify(
         {"message": "checked set to true", "clip_id": clip_id, "checked": True}
@@ -942,37 +1181,18 @@ def mark_clip_checked(clip_id):
 
 @app.route("/jobs/latest", methods=["GET"])
 def get_latest_job_for_user():
-    """
-    username 쿼리파라미터가 와도 일단은 무시하고,
-    jobs 테이블에서 가장 최근 것 하나만 반환.
-    (나중에 username 컬럼 확실해지면 filter_by 추가해도 OK)
-    """
     try:
         q = Job.query
-
-        # 만약 Job 모델에 username 컬럼이 실제로 있다면,
-        # 아래 주석 풀고 username으로 필터링해도 됨.
-        #
-        # username = request.args.get("username")
-        # if username and hasattr(Job, "username"):
-        #     q = q.filter_by(username=username)
-
-        # created_at 컬럼이 있으면 그걸로, 없으면 id 기준으로 정렬
         if hasattr(Job, "created_at"):
             q = q.order_by(Job.created_at.desc())
         elif hasattr(Job, "id"):
             q = q.order_by(Job.id.desc())
         else:
-            # 둘 다 없으면 그냥 job_id 문자열 기준으로라도 정렬
             q = q.order_by(Job.job_id.desc())
-
         job_row = q.first()
-
         if not job_row:
             return jsonify({"error": "no jobs"}), 404
-
         return jsonify({"job_id": job_row.job_id}), 200
-
     except Exception as e:
         print("[/jobs/latest] ERROR:", e)
         return jsonify({"error": "internal server error"}), 500
