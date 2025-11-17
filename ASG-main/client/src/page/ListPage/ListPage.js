@@ -35,7 +35,15 @@ function ListPage() {
         const mapped = (data.clips || []).map((c, i) => ({
             id: c.id,
             date: c.start_time ?? "",
-            message: c.class_name === "assault" ? "폭행" : c.class_name ?? "",
+            message:
+                c.class_name === "assault"
+                    ? "폭행"
+                    : c.class_name === "swoon"
+                    ? "기절"
+                    : c.class_name === "trespass"
+                    ? "침입"
+                    : c.class_name ?? "",
+
             checked: Boolean(c.checked),
             clipPath: (c.clip_path || "").replace(/\\/g, "/"),
             thumbPath: c.thumb_url || "",
